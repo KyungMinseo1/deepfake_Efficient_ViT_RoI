@@ -205,3 +205,11 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Extra
+/관련 논문
+/베이스라인
+/data
+/data_sample
+/efficient-vit
+/pretrained_model
