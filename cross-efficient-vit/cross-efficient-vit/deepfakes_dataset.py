@@ -10,15 +10,16 @@ from albumentations import Compose, RandomBrightnessContrast, \
     LongestMaxSize, KeypointParams
 
 class DeepFakesDataset(Dataset):
-    def __init__(self, images, labels, image_size, mode = 'train'):
+    def __init__(self, images, coordinates, labels, image_size, mode = 'train'):
         self.x = images
+        self.x2 = coordinates
         self.y = torch.from_numpy(labels)
         self.image_size = image_size
         self.mode = mode
         self.n_samples = images.shape[0]
     
     def create_train_transforms(self, size):
-        keypoint_params = KeypointParams(format='xy', remove_invisible=False)
+        keypoint_params = KeypointParams(format='xy', remove_invisible=True)
         return Compose([
             ImageCompression(quality_lower=60, quality_upper=100, p=0.2), # type: ignore
             GaussNoise(p=0.3),
@@ -36,13 +37,15 @@ class DeepFakesDataset(Dataset):
         ], keypoint_params=keypoint_params) # type: ignore
         
     def create_val_transform(self, size):
+        keypoint_params = KeypointParams(format='xy', remove_invisible=True) 
         return Compose([
             LongestMaxSize(max_size=size, interpolation=cv2.INTER_CUBIC),
             PadIfNeeded(min_height=size, min_width=size, border_mode=cv2.BORDER_CONSTANT),
-        ])
+        ], keypoint_params=keypoint_params)
 
-    def __getitem__(self, index, coordinates):
+    def __getitem__(self, index):
         image = np.asarray(self.x[index])
+        coordinates = np.asarray(self.x2[index])
         
         if self.mode == 'train':
             transform = self.create_train_transforms(self.image_size)
@@ -55,10 +58,17 @@ class DeepFakesDataset(Dataset):
         augmented = transform(image=image, keypoints=coordinates)
         transformed_image = augmented['image']
         transformed_coordinates = augmented['keypoints'] # 변환된 키포인트
+
+        transformed_image = np.transpose(transformed_image, (2, 0, 1))
+
+        if len(transformed_coordinates) > 0:
+            transformed_coordinates = np.array(transformed_coordinates)
+        else:
+            transformed_coordinates = np.zeros((0, 2))
         
         #cv2.imwrite("../dataset/augmented_frames/vit_augmentation/square_fda/"+str(unique)+"_"+str(index)+".png", image)
         
-        return torch.tensor(transformed_image).float(), transformed_coordinates, self.y[index]
+        return torch.tensor(transformed_image).float(), torch.tensor(transformed_coordinates).float(), self.y[index]
 
     def __len__(self):
         return self.n_samples

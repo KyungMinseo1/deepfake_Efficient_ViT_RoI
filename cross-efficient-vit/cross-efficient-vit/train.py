@@ -1,11 +1,5 @@
 import torch
-from torch.utils.data import DataLoader, TensorDataset, Dataset
-from einops import rearrange, repeat
-from torch import nn, einsum
-import torch.nn as nn
-import torch.nn.functional as F
-from random import random, randint, choice
-from vit_pytorch import ViT
+from torch.utils.data import DataLoader
 import numpy as np
 import os
 import json
@@ -14,22 +8,16 @@ from functools import partial
 from multiprocessing import Manager
 from progress.bar import ChargingBar
 from cross_efficient_vit import CrossEfficientViT
-import uuid
-from torch.utils.data import DataLoader, TensorDataset, Dataset
-from sklearn.metrics import accuracy_score
 import cv2
-from transforms.albu import IsotropicResize
-import glob
-import pandas as pd
 from tqdm import tqdm
-from utils import get_method, check_correct, resize, shuffle_dataset, get_n_params
-from sklearn.utils.class_weight import compute_class_weight 
+from utils2 import check_correct, shuffle_dataset, get_n_params
 from torch.optim import lr_scheduler
 import collections
 from deepfakes_dataset import DeepFakesDataset
 import math
 import yaml
 import argparse
+import json
 
 BASE_DIR = '../../'
 DATA_DIR = os.path.join(BASE_DIR, "data", "archive", "FaceForensics++_C23")
@@ -45,7 +33,6 @@ def read_frames(video_path, train_dataset, validation_dataset):
     # video_path -> ex) data/archive/FaceForensics++_C23/training_set/DeepFakeDetection/01_02__meeting_serious__YVGY8LOK
     
     # Get the video label based on dataset selected
-    method = get_method(video_path, DATA_DIR)
     if "original" in video_path:
         label = 0.
     else:
@@ -65,7 +52,7 @@ def read_frames(video_path, train_dataset, validation_dataset):
     if VALIDATION_DIR in video_path:
         min_video_frames = int(max(min_video_frames/8, 2))
     frames_interval = int(frames_number / min_video_frames)
-    frames_paths = os.listdir(video_path)
+    frames_paths = [f for f in os.listdir(video_path) if f.endswith('.png')]
     frames_paths_dict = {}
 
     # Group the faces with the same index, reduce probabiity to skip some faces in the same video
@@ -91,11 +78,13 @@ def read_frames(video_path, train_dataset, validation_dataset):
         for index, frame_image in enumerate(frames_paths_dict[key]):
             #image = transform(np.asarray(cv2.imread(os.path.join(video_path, frame_image))))
             image = cv2.imread(os.path.join(video_path, frame_image))
+            with open(os.path.join(video_path, os.path.splitext(os.path.basename(frame_image))[0]) + '.json', 'r') as f:
+                coordinates = json.load(f)
             if image is not None:
                 if TRAINING_DIR in video_path:
-                    train_dataset.append((image, label))
+                    train_dataset.append((image, coordinates, label))
                 else:
-                    validation_dataset.append((image, label))
+                    validation_dataset.append((image, coordinates, label))
 
 # Main body
 if __name__ == "__main__":
@@ -175,33 +164,33 @@ if __name__ == "__main__":
     # Print some useful statistics
     print("Train images:", len(train_dataset), "Validation images:", len(validation_dataset))
     print("__TRAINING STATS__")
-    train_counters = collections.Counter(image[1] for image in train_dataset)
+    train_counters = collections.Counter(image[2] for image in train_dataset)
     print(train_counters)
     
     class_weights = train_counters[0] / train_counters[1]
     print("Weights", class_weights)
 
     print("__VALIDATION STATS__")
-    val_counters = collections.Counter(image[1] for image in validation_dataset)
+    val_counters = collections.Counter(image[2] for image in validation_dataset)
     print(val_counters)
     print("___________________")
 
     loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([class_weights]))
 
     # Create the data loaders
-    validation_labels = np.asarray([row[1] for row in validation_dataset])
-    labels = np.asarray([row[1] for row in train_dataset])
+    validation_labels = np.asarray([row[2] for row in validation_dataset])
+    labels = np.asarray([row[2] for row in train_dataset])
 
-    train_dataset = DeepFakesDataset(np.asarray([row[0] for row in train_dataset]), labels, config['model']['image-size'])
-    dl = torch.utils.data.DataLoader(train_dataset, batch_size=config['training']['bs'], shuffle=True, sampler=None,
+    train_dataset = DeepFakesDataset(np.asarray([row[0] for row in train_dataset]), np.asarray([row[1] for row in train_dataset]), labels, config['model']['image-size'])
+    dl = DataLoader(train_dataset, batch_size=config['training']['bs'], shuffle=True, sampler=None,
                                  batch_sampler=None, num_workers=opt.workers, collate_fn=None,
                                  pin_memory=False, drop_last=False, timeout=0,
                                  worker_init_fn=None, prefetch_factor=2,
                                  persistent_workers=False)
     del train_dataset
 
-    validation_dataset = DeepFakesDataset(np.asarray([row[0] for row in validation_dataset]), validation_labels, config['model']['image-size'], mode='validation')
-    val_dl = torch.utils.data.DataLoader(validation_dataset, batch_size=config['training']['bs'], shuffle=True, sampler=None,
+    validation_dataset = DeepFakesDataset(np.asarray([row[0] for row in validation_dataset]), np.asarray([row[1] for row in validation_dataset]), validation_labels, config['model']['image-size'], mode='validation')
+    val_dl = DataLoader(validation_dataset, batch_size=config['training']['bs'], shuffle=True, sampler=None,
                                     batch_sampler=None, num_workers=opt.workers, collate_fn=None,
                                     pin_memory=False, drop_last=False, timeout=0,
                                     worker_init_fn=None, prefetch_factor=2,
@@ -225,9 +214,9 @@ if __name__ == "__main__":
         positive = 0
         negative = 0
         for index, (images, coordinates, labels) in enumerate(dl):
-            images = np.transpose(images, (0, 3, 1, 2))
             labels = labels.unsqueeze(1)
             images = images.cuda()
+            coordinates = coordinates.cuda()
             
             y_pred = model(images, coordinates)
             y_pred = y_pred.cpu()
@@ -260,10 +249,8 @@ if __name__ == "__main__":
         train_correct /= train_samples
         total_loss /= counter
         for index, (val_images, val_coordinates, val_labels) in enumerate(val_dl):
-    
-            val_images = np.transpose(val_images, (0, 3, 1, 2))
-            
             val_images = val_images.cuda()
+            val_coordinates = val_coordinates.cuda()
             val_labels = val_labels.unsqueeze(1)
             val_pred = model(val_images, val_coordinates)
             val_pred = val_pred.cpu()

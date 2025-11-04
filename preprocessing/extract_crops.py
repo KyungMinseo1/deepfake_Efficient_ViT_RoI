@@ -22,8 +22,6 @@ from utils import get_video_paths, get_method, get_method_from_name
 def extract_video(video, root_dir, output_dir):
     try:
         data_folder = get_method_from_name(video)
-        if data_folder != 'original':
-            return
         bboxes_path = os.path.join(root_dir, "boxes", data_folder, os.path.splitext(os.path.basename(video))[0] + ".json")
         if not os.path.exists(bboxes_path) or not os.path.exists(video):
             return

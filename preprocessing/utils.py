@@ -5,6 +5,24 @@ from pathlib import Path
 import cv2
 banned_folders = ["boxes", "set", "splits", "actors", "crops", "actors", "zip", "csv"]
 
+# data_path: data/archive/FaceForensics++_C23/crops
+def get_crop_paths(data_path, excluded_crops=[]):
+    crops_folders = os.listdir(data_path)
+    crops_paths = []
+    for data_folder in crops_folders:
+        data_folder_path = os.path.join(data_path, data_folder)
+        inner_folder_lst = os.listdir(data_folder_path)
+        for inner_folder in inner_folder_lst:
+            inner_folder_path = os.path.join(data_folder_path, inner_folder)
+            crops_names = os.listdir(inner_folder_path)
+            for crop_name in crops_names:
+                crops_path = os.path.join(inner_folder_path, crop_name)
+                if crops_path not in excluded_crops:
+                    crops_paths.append(crops_path)
+                else:
+                    continue
+    return crops_paths
+
 # data_path: data/archive/FaceForensics++_C23
 def get_video_paths(data_path, excluded_videos=[]):
     videos_folders = os.listdir(data_path)

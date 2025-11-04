@@ -65,7 +65,7 @@ class Attention(nn.Module):
         context = default(context, x)
 
         if kv_include_self:
-            context = torch.cat((x, context), dim = 1) # cross attention requires CLS token includes itself as key / value
+            context = torch.cat((x, context), dim = 1) # cross attention requires CLS token includes itself as key / value # type: ignore
 
         qkv = (self.to_q(x), *self.to_kv(context).chunk(2, dim = -1))
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), qkv)
@@ -92,7 +92,7 @@ class Transformer(nn.Module):
             ]))
 
     def forward(self, x):
-        for attn, ff in self.layers:
+        for attn, ff in self.layers: # type: ignore
             x = attn(x) + x
             x = ff(x) + x
         return self.norm(x)
@@ -129,7 +129,7 @@ class CrossTransformer(nn.Module):
     def forward(self, sm_tokens, roi_tokens):
         (sm_cls, sm_patch_tokens), (roi_cls, roi_patch_tokens) = map(lambda t: (t[:, :1], t[:, 1:]), (sm_tokens, roi_tokens))
 
-        for sm_attend_roi, roi_attend_sm in self.layers:
+        for sm_attend_roi, roi_attend_sm in self.layers: # type: ignore
             sm_cls = sm_attend_roi(sm_cls, context = roi_patch_tokens, kv_include_self = True) + sm_cls
             roi_cls = roi_attend_sm(roi_cls, context = sm_patch_tokens, kv_include_self = True) + roi_cls
 
@@ -157,13 +157,13 @@ class MultiScaleEncoder(nn.Module):
         self.layers = nn.ModuleList([])
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
-                Transformer(dim = sm_dim, dropout = dropout, **sm_enc_params),
-                Transformer(dim = roi_dim, dropout = dropout, **roi_enc_params),
+                Transformer(dim = sm_dim, dropout = dropout, **sm_enc_params), # type: ignore
+                Transformer(dim = roi_dim, dropout = dropout, **roi_enc_params), # type: ignore
                 CrossTransformer(sm_dim = sm_dim, roi_dim = roi_dim, depth = cross_attn_depth, heads = cross_attn_heads, dim_head = cross_attn_dim_head, dropout = dropout)
             ]))
 
     def forward(self, sm_tokens, roi_tokens):
-        for sm_enc, roi_enc, cross_attend in self.layers:
+        for sm_enc, roi_enc, cross_attend in self.layers: # type: ignore
             sm_tokens, roi_tokens = sm_enc(sm_tokens), roi_enc(roi_tokens)
             sm_tokens, roi_tokens = cross_attend(sm_tokens, roi_tokens)
 
@@ -223,7 +223,7 @@ class ImageEmbedder(nn.Module):
         rois = torch.tensor(rois, dtype=torch.float32, device=imgs.device)
 
         # Extract 7x7 patches using ROI Align
-        patches = roi_align(imgs, rois, output_size=(self.patch_size, self.patch_size))
+        patches = roi_align(imgs, rois, output_size=(self.patch_size, self.patch_size)) # type: ignore
         return patches  # [B * num_coords, C, 7, 7]
 
     def forward(self, img, landmarks=None):
