@@ -4,6 +4,8 @@ import os
 import sys
 from os import cpu_count
 
+sys.stderr = open(os.devnull, 'w')
+
 class SuppressOutput:
     def __enter__(self):
         self._original_stderr = sys.stderr
@@ -19,7 +21,7 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["GLOG_minloglevel"] = "3"   # 0=INFO, 1=WARNING, 2=ERROR, 3=FATAL (2->3으로 변경)
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # (2->3으로 변경)
-os.environ["TFLITE_LOG_LEVEL"] = "3"  # TFLite 로그 레벨 추가
+
 from functools import partial
 from multiprocessing.pool import Pool
 
@@ -28,6 +30,9 @@ with SuppressOutput():
     from mediapipe.python.solutions import face_mesh
 
 from utils import get_crop_paths, get_method_from_name
+
+from absl import logging
+logging.set_verbosity(logging.ERROR)
 
 cv2.ocl.setUseOpenCL(False)
 cv2.setNumThreads(0)

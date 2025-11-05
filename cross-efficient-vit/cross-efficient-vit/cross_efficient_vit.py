@@ -201,7 +201,7 @@ class ImageEmbedder(nn.Module):
             self.linear_proj
         )
       
-        max_patches = max((image_size // patch_size) ** 2, 64)
+        max_patches = max((image_size // patch_size) ** 2, 121)
         self.pos_embedding = nn.Parameter(torch.randn(1, max_patches + 1, dim))
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
         self.dropout = nn.Dropout(dropout)
@@ -209,22 +209,45 @@ class ImageEmbedder(nn.Module):
         self.is_roi = is_roi
     
     # extract ROI
-    def extract_patches_roi(self, imgs, coords_batch):
+    def extract_patches_roi(self, imgs, scaled_landmarks):
         """
-        imgs: [B, C, H, W]
-        coords_batch: list of [(x, y), ...] for each image
+        imgs: [B, C', H', W'] (CNN feature map)
+        scaled_landmarks: [B, N_coords, 2] (Tensor, feature map scale)
         """
-        rois = []
-        for b, coords in enumerate(coords_batch):
-            for (x, y) in coords:
-                x1, y1 = x - self.patch_size // 2, y - self.patch_size // 2
-                x2, y2 = x + self.patch_size // 2, y + self.patch_size // 2
-                rois.append([b, x1, y1, x2, y2])
-        rois = torch.tensor(rois, dtype=torch.float32, device=imgs.device)
+        B, N_coords, _ = scaled_landmarks.shape
+        patch_size = self.patch_size # ROI Align 출력 크기 (예: 7)
 
-        # Extract 7x7 patches using ROI Align
-        patches = roi_align(imgs, rois, output_size=(self.patch_size, self.patch_size)) # type: ignore
-        return patches  # [B * num_coords, C, 7, 7]
+        # Feature map 크기
+        H_feat, W_feat = imgs.shape[2:]
+
+        # 랜드마크에서 ROI 좌표 계산 (Tensor 연산)
+        center = scaled_landmarks
+        half_patch = patch_size / 2
+        
+        x1 = center[:, :, 0] - half_patch
+        y1 = center[:, :, 1] - half_patch
+        x2 = center[:, :, 0] + half_patch
+        y2 = center[:, :, 1] + half_patch
+
+        x1 = torch.clamp(x1, min=0, max=W_feat - patch_size) # x1은 x2보다 작아야 함 (최대 W_feat - patch_size)
+        y1 = torch.clamp(y1, min=0, max=H_feat - patch_size) # y1은 y2보다 작아야 함 (최대 H_feat - patch_size)
+        
+        x2 = torch.clamp(x2, min=patch_size, max=W_feat)
+        y2 = torch.clamp(y2, min=patch_size, max=H_feat)
+        
+        # 배치 인덱스 생성
+        batch_indices = torch.arange(B, device=imgs.device).repeat_interleave(N_coords)
+        batch_indices = batch_indices.unsqueeze(1).float()
+        
+        # [B * N_coords, 4] 형태의 좌표 Tensor 생성
+        coords_flat = torch.stack((x1.flatten(), y1.flatten(), x2.flatten(), y2.flatten()), dim=1)
+        
+        # 최종 rois Tensor: [B*N_coords, 5]
+        rois = torch.cat((batch_indices, coords_flat), dim=1)
+
+        # Extract patches using ROI Align
+        patches = roi_align(imgs, rois, output_size=(patch_size, patch_size)) # type: ignore
+        return patches
 
     def forward(self, img, landmarks=None):
         """
@@ -236,18 +259,23 @@ class ImageEmbedder(nn.Module):
         # 여기서 x: [B, C', H', W']
 
         if self.is_roi and landmarks is not None:
-            # 스케일 보정
+            # landmarks는 [B, N_coords, 2] 형태의 Tensor라고 가정
+
             B, C, H_feat, W_feat = x.shape
             _, _, H_img, W_img = img.shape
+            
+            # 스케일 보정 (Tensor 연산)
             scale_x = W_feat / W_img
             scale_y = H_feat / H_img
-            scaled_landmarks = [
-                [(lx * scale_x, ly * scale_y) for (lx, ly) in coords]
-                for coords in landmarks
-            ]
-
-            # ROI-based patch extraction (using dlib landmarks)
-            patches = self.extract_patches_roi(x, scaled_landmarks)  # [B*num_coords, C', 7, 7]
+            
+            # [1, 1, 2] 형태의 스케일 Tensor 생성
+            scale_tensor = torch.tensor([scale_x, scale_y], device=landmarks.device).view(1, 1, 2)
+            
+            # Tensor 곱셈으로 전체 배치의 랜드마크 스케일 보정
+            scaled_landmarks = landmarks * scale_tensor 
+            
+            # ROI-based patch extraction
+            patches = self.extract_patches_roi(x, scaled_landmarks)
 
             # Flatten each patch
             patches = patches.flatten(1)  # [B*num_coords, C'*7*7]
@@ -256,7 +284,7 @@ class ImageEmbedder(nn.Module):
             x = self.linear_proj(patches)
 
             # Reshape to [B, N, dim]
-            num_coords = len(landmarks[0])  # usually 64
+            num_coords = len(landmarks[0])  # 121
             B = img.size(0)
             x = x.view(B, num_coords, -1)
 

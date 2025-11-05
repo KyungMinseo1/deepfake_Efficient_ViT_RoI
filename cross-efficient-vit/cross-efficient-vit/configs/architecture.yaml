@@ -1,7 +1,7 @@
 training:
-  lr: 0.01
+  lr: 0.005
   weight-decay: 0.0000001
-  bs: 16
+  bs: 8
   scheduler: 'steplr'
   gamma: 0.1
   step-size: 15
@@ -19,16 +19,16 @@ model:
   sm-enc-dim-head: 64        
   sm-enc-heads: 8        # high res heads
   sm-enc-mlp-dim: 2048   # high res feedforward dimension
-  lg-dim: 384            # low res dimension
-  lg-patch-size: 56      # low res patch size
-  lg-enc-depth: 3        # low res depth
-  lg-enc-dim-head: 64    
-  lg-enc-heads: 8        # low res heads
-  lg-enc-mlp-dim: 2048   # low res feedforward dimensions
+  roi-dim: 384            # low res dimension
+  roi-patch-size: 56      # low res patch size
+  roi-enc-depth: 3        # low res depth
+  roi-enc-dim-head: 64    
+  roi-enc-heads: 8        # low res heads
+  roi-enc-mlp-dim: 2048   # low res feedforward dimensions
   cross-attn-depth: 2    # cross attention rounds
   cross-attn-dim-head: 64    
   cross-attn-heads: 8    # cross attention heads
-  lg-channels: 24
+  roi-channels: 24
   sm-channels: 1280
   dropout: 0.15
   emb-dropout: 0.15

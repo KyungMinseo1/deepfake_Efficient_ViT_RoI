@@ -19,7 +19,7 @@ class DeepFakesDataset(Dataset):
         self.n_samples = images.shape[0]
     
     def create_train_transforms(self, size):
-        keypoint_params = KeypointParams(format='xy', remove_invisible=True)
+        keypoint_params = KeypointParams(format='xy', remove_invisible=False)
         return Compose([
             ImageCompression(quality_lower=60, quality_upper=100, p=0.2), # type: ignore
             GaussNoise(p=0.3),
@@ -37,15 +37,16 @@ class DeepFakesDataset(Dataset):
         ], keypoint_params=keypoint_params) # type: ignore
         
     def create_val_transform(self, size):
-        keypoint_params = KeypointParams(format='xy', remove_invisible=True) 
+        keypoint_params = KeypointParams(format='xy', remove_invisible=False) 
         return Compose([
             LongestMaxSize(max_size=size, interpolation=cv2.INTER_CUBIC),
             PadIfNeeded(min_height=size, min_width=size, border_mode=cv2.BORDER_CONSTANT),
         ], keypoint_params=keypoint_params)
 
     def __getitem__(self, index):
-        image = np.asarray(self.x[index])
-        coordinates = np.asarray(self.x2[index])
+        image = self.x[index]
+        coordinates = self.x2[index]
+        label = self.y[index]
         
         if self.mode == 'train':
             transform = self.create_train_transforms(self.image_size)
@@ -68,7 +69,7 @@ class DeepFakesDataset(Dataset):
         
         #cv2.imwrite("../dataset/augmented_frames/vit_augmentation/square_fda/"+str(unique)+"_"+str(index)+".png", image)
         
-        return torch.tensor(transformed_image).float(), torch.tensor(transformed_coordinates).float(), self.y[index]
+        return torch.tensor(transformed_image).float(), torch.tensor(transformed_coordinates).float(), torch.tensor(label, dtype=torch.float32)
 
     def __len__(self):
         return self.n_samples
