@@ -20,7 +20,7 @@ model:
   sm-enc-heads: 8        # high res heads
   sm-enc-mlp-dim: 2048   # high res feedforward dimension
   roi-dim: 384            # low res dimension
-  roi-patch-size: 56      # low res patch size
+  roi-patch-size: 7      # roi res patch size
   roi-enc-depth: 3        # low res depth
   roi-enc-dim-head: 64    
   roi-enc-heads: 8        # low res heads

@@ -8,6 +8,8 @@ from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 from efficient_net.efficientnet_pytorch import EfficientNet
 from torchvision.ops import roi_align
+import matplotlib.pyplot as plt
+import os
 
 # helpers
 
@@ -201,7 +203,7 @@ class ImageEmbedder(nn.Module):
             self.linear_proj
         )
       
-        max_patches = max((image_size // patch_size) ** 2, 121)
+        max_patches = max((image_size // patch_size) ** 2, 98)
         self.pos_embedding = nn.Parameter(torch.randn(1, max_patches + 1, dim))
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
         self.dropout = nn.Dropout(dropout)
@@ -249,7 +251,7 @@ class ImageEmbedder(nn.Module):
         patches = roi_align(imgs, rois, output_size=(patch_size, patch_size)) # type: ignore
         return patches
 
-    def forward(self, img, landmarks=None):
+    def forward(self, img, landmarks=None, is_sample=False):
         """
         img: [B, C, H, W]
         landmarks: list of [(x, y), ...] for each image (len = 64)
@@ -272,10 +274,53 @@ class ImageEmbedder(nn.Module):
             scale_tensor = torch.tensor([scale_x, scale_y], device=landmarks.device).view(1, 1, 2)
             
             # Tensor 곱셈으로 전체 배치의 랜드마크 스케일 보정
-            scaled_landmarks = landmarks * scale_tensor 
+            scaled_landmarks = landmarks * scale_tensor
             
             # ROI-based patch extraction
             patches = self.extract_patches_roi(x, scaled_landmarks)
+
+            if is_sample:
+                os.makedirs('sample', exist_ok=True)
+                with torch.no_grad():
+                    # -----------------------------
+                    # 1️⃣ Feature map + landmarks
+                    # -----------------------------
+                    feat_map = x[0].detach().cpu()  # 첫 번째 이미지
+                    feat_map_vis = feat_map.mean(0).numpy()  # [H', W']
+                    XY = scaled_landmarks[0].detach().cpu().numpy()  # 첫 번째 이미지의 좌표
+
+                    plt.figure(figsize=(6,6))
+                    plt.imshow(feat_map_vis, cmap='viridis', origin='upper')
+                    plt.scatter(XY[:,0], XY[:,1], s=10, c='red')
+                    plt.title('Feature map with scaled landmarks')
+                    plt.savefig("sample/featuremap_with_landmarks.png")
+                    plt.close()
+
+                    # -----------------------------
+                    # 2️⃣ Extracted ROI patches 시각화
+                    # -----------------------------
+
+                    # 첫 번째 배치의 패치만
+                    B, N_coords, C, p, _ = 1, XY.shape[0], patches.shape[1], patches.shape[2], patches.shape[3]
+                    patches_for_sample = patches[:N_coords].detach().cpu()
+
+                    # 채널 평균
+                    patch_imgs = patches_for_sample.mean(1).numpy()  # [N_coords, 7, 7]
+
+                    # -----------------------------
+                    # 3️⃣ Grid로 보기 (ex: 10x10)
+                    # -----------------------------
+                    num_show = min(N_coords, 100)  # 너무 많으면 100개만
+                    grid_size = int(num_show ** 0.5)
+
+                    fig, axes = plt.subplots(grid_size, grid_size, figsize=(8,8))
+                    for i, ax in enumerate(axes.flat):
+                        ax.imshow(patch_imgs[i], cmap='viridis')
+                        ax.axis('off')
+                    plt.suptitle('Extracted ROI patches (mean over channels)')
+                    plt.tight_layout()
+                    plt.savefig("sample/roi_patches_grid.png")
+                    plt.close()
 
             # Flatten each patch
             patches = patches.flatten(1)  # [B*num_coords, C'*7*7]
@@ -308,7 +353,8 @@ class CrossEfficientViT(nn.Module):
     def __init__(
         self,
         *,
-        config
+        config,
+        is_sample = False
     ):
         super().__init__()
         image_size = config['model']['image-size']
@@ -334,7 +380,7 @@ class CrossEfficientViT(nn.Module):
         dropout = config['model']['dropout']
         emb_dropout = config['model']['emb-dropout']
 
-
+        self.is_sample = is_sample
 
         self.sm_image_embedder = ImageEmbedder(dim = sm_dim, image_size = image_size, patch_size = sm_patch_size, dropout = emb_dropout, efficient_block = 16, channels=sm_channels, is_roi=False)
         self.roi_image_embedder = ImageEmbedder(dim = roi_dim, image_size = image_size, patch_size = roi_patch_size, dropout = emb_dropout, efficient_block = 1, channels=roi_channels, is_roi=True)
@@ -365,8 +411,8 @@ class CrossEfficientViT(nn.Module):
         self.roi_mlp_head = nn.Sequential(nn.LayerNorm(roi_dim), nn.Linear(roi_dim, num_classes))
 
     def forward(self, img, coordinates):
-        sm_tokens = self.sm_image_embedder(img)
-        roi_tokens = self.roi_image_embedder(img, coordinates)
+        sm_tokens = self.sm_image_embedder(img, self.is_sample)
+        roi_tokens = self.roi_image_embedder(img, coordinates, self.is_sample)
 
         sm_tokens, roi_tokens = self.multi_scale_encoder(sm_tokens, roi_tokens)
 
