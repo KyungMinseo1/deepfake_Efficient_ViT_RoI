@@ -8,7 +8,7 @@ EfficientNet과 Vision Transformer(ViT)를 결합하고, 시계열 프레임 단
 4. LSTM 이후 연결된 dense 네트워크로 최종 분류  => 11/5
 
 ## 📊 논리적 구조
-
+<pre>
 ┌─────────────────────────────────────────┐
 │             Input Image (224×224)       │
 └─────────────────────────────────────────┘
@@ -25,9 +25,11 @@ EfficientNet과 Vision Transformer(ViT)를 결합하고, 시계열 프레임 단
         │         │         │
         ▼         ▼         ▼
    Dim 384     Dim 256     Dim 192
+</pre>
 
+  
 ## 데이터 흐름
-
+<pre>
 Input (224×224)
    │
    ├──▶ EfficientNet Backbone
@@ -44,3 +46,4 @@ Input (224×224)
              │
              ▼
          DeepFake / Real
+</pre>
