@@ -181,7 +181,7 @@ def read_frames(data, dataset, config, mode='train', is_sample=False):
 
                     if results.multi_face_landmarks: # type: ignore
                         for face_landmarks in results.multi_face_landmarks: # type: ignore
-                            for lm in face_landmarks.landmark[::4]:
+                            for lm in np.array(face_landmarks.landmark[:])[index]:
                                 x = int(lm.x * image.shape[1])
                                 y = int(lm.y * image.shape[0])
                                 coordinates.append([x, y])
@@ -219,7 +219,7 @@ if __name__ == "__main__":
     opt = parser.parse_args()
     print(opt)
 
-    with open(opt.config, 'r') as ymlfile:
+    with open(opt.config, 'r', encoding="utf-8") as ymlfile:
         config = yaml.safe_load(ymlfile)
  
     if opt.dataset != "Sample":
@@ -235,7 +235,8 @@ if __name__ == "__main__":
     
     optimizer = torch.optim.SGD(model.parameters(), lr=config['training']['lr'], weight_decay=config['training']['weight-decay'])
     scheduler = lr_scheduler.StepLR(optimizer, step_size=config['training']['step-size'], gamma=config['training']['gamma'])
-    
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # 학습 히스토리 초기화
     history = {
         'train_loss': [],
@@ -331,7 +332,7 @@ if __name__ == "__main__":
         print("Skipping Validation Count")
     print("___________________")
 
-    loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([class_weights]))
+    loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([class_weights]).to(device))
 
     # Create the data loaders
     if validation_samples > 0:
@@ -352,21 +353,15 @@ if __name__ == "__main__":
                                         pin_memory=True, drop_last=False, timeout=0,
                                         worker_init_fn=None, persistent_workers=False)
         del validation_dataset
-    
-    if torch.cuda.is_available():
-        model = model.cuda()
-    else:
-        model = model.cpu()
+
+    model = model.to(device)
+    print("Current Device:", device)
     
     if is_sample:
         for index, (images, coordinates, labels) in enumerate(dl):
-            labels = labels.unsqueeze(1)
-            if torch.cuda.is_available():
-                images = images.cuda()
-                coordinates = coordinates.cuda()
-            else:
-                images = images.cpu()
-                coordinates = coordinates.cpu()
+            labels = labels.unsqueeze(1).to(device)
+            images = images.to(device)
+            coordinates = coordinates.to(device)
             
             y_pred = model(images, coordinates)
 
@@ -376,85 +371,90 @@ if __name__ == "__main__":
         counter = 0
         not_improved_loss = 0
         previous_loss = math.inf if not history['val_loss'] else history['val_loss'][-1]
-        
+
         for t in range(starting_epoch, opt.num_epochs + 1):
             if not_improved_loss == opt.patience:
                 break
             counter = 0
 
+            # ===== Training Phase =====
+            model.train()
             total_loss = 0
-            total_val_loss = 0
             
             bar = ChargingBar('EPOCH #' + str(t), max=(len(dl)*config['training']['bs'])+len(val_dl))
             train_correct = 0
             positive = 0
             negative = 0
-            for index, (images, coordinates, labels) in enumerate(dl):
-                labels = labels.unsqueeze(1)
-                if torch.cuda.is_available():
-                    images = images.cuda()
-                    coordinates = coordinates.cuda()
-                else:
-                    images = images.cpu()
-                    coordinates = coordinates.cpu()
-                
-                y_pred = model(images, coordinates)
-                y_pred = y_pred.cpu()
-                loss = loss_fn(y_pred, labels)
             
-                corrects, positive_class, negative_class = check_correct(y_pred, labels)  
+            for index, (images, coordinates, labels) in enumerate(dl):
+                labels = labels.unsqueeze(1).to(device)
+                images = images.to(device)
+                coordinates = coordinates.to(device)
+                            
+                optimizer.zero_grad()
+                y_pred = model(images, coordinates)
+                loss = loss_fn(y_pred, labels)
+                loss.backward()
+                optimizer.step()
+            
+                corrects, positive_class, negative_class = check_correct(
+                    y_pred.detach().cpu(), 
+                    labels.detach().cpu()
+                )  
                 train_correct += corrects
                 positive += positive_class
                 negative += negative_class
-                optimizer.zero_grad()
                 
-                loss.backward()
-
-                optimizer.step()
                 counter += 1
-                total_loss += round(loss.item(), 2)
+                total_loss += loss.item()
+                
                 for i in range(config['training']['bs']):
                     bar.next()
-
                 
-                if index%1200 == 0:
-                    print("\nLoss: ", total_loss/counter, "Accuracy: ",train_correct/(counter*config['training']['bs']) ,"Train 0s: ", negative, "Train 1s:", positive)  
+                if index % 1200 == 0:
+                    print(f"\nLoss: {total_loss/counter:.4f}, Accuracy: {train_correct/(counter*config['training']['bs']):.4f}, Train 0s: {negative}, Train 1s: {positive}")
 
+            train_correct /= train_samples
+            total_loss /= counter
 
+            # ===== Validation Phase =====
+            model.eval()
+            total_val_loss = 0
             val_counter = 0
             val_correct = 0
             val_positive = 0
             val_negative = 0
-        
-            train_correct /= train_samples
-            total_loss /= counter
-            for index, (val_images, val_coordinates, val_labels) in enumerate(val_dl):
-                if torch.cuda.is_available():
-                    val_images = val_images.cuda()
-                    val_coordinates = val_coordinates.cuda()
-                else:
-                    val_images = val_images.cpu()
-                    val_coordinates = val_coordinates.cpu()
-                val_labels = val_labels.unsqueeze(1)
-                val_pred = model(val_images, val_coordinates)
-                val_pred = val_pred.cpu()
-                val_loss = loss_fn(val_pred, val_labels)
-                total_val_loss += round(val_loss.item(), 2)
-                corrects, positive_class, negative_class = check_correct(val_pred, val_labels)
-                val_correct += corrects
-                val_positive += positive_class
-                val_negative += negative_class
-                val_counter += 1
-                bar.next()
+
+            with torch.no_grad():
+                for index, (val_images, val_coordinates, val_labels) in enumerate(val_dl):
+                    val_labels = val_labels.unsqueeze(1).to(device)
+                    val_images = val_images.to(device)
+                    val_coordinates = val_coordinates.to(device)
+                    
+                    val_pred = model(val_images, val_coordinates)
+                    val_loss = loss_fn(val_pred, val_labels)
+                    
+                    total_val_loss += val_loss.item()
+                    
+                    # CPU에서 metric 계산
+                    corrects, positive_class, negative_class = check_correct(
+                        val_pred.cpu(), 
+                        val_labels.cpu()
+                    )
+                    val_correct += corrects
+                    val_positive += positive_class
+                    val_negative += negative_class
+                    val_counter += 1
+                    bar.next()
                 
             scheduler.step()
             bar.finish()
             
-
             total_val_loss /= val_counter
             val_correct /= validation_samples
+            
             if previous_loss <= total_val_loss:
-                print("Validation loss did not improved")
+                print("Validation loss did not improve")
                 not_improved_loss += 1
             else:
                 not_improved_loss = 0
@@ -473,7 +473,7 @@ if __name__ == "__main__":
             
             print("#" + str(t) + "/" + str(opt.num_epochs) + " loss:" +
                 str(total_loss) + " accuracy:" + str(train_correct) +" val_loss:" + str(total_val_loss) + " val_accuracy:" + str(val_correct) + " val_0s:" + str(val_negative) + "/" + str(np.count_nonzero(validation_labels == 0)) + " val_1s:" + str(val_positive) + "/" + str(np.count_nonzero(validation_labels == 1)))
-        
+
             
             if not os.path.exists(MODELS_PATH):
                 os.makedirs(MODELS_PATH)
@@ -498,17 +498,17 @@ if __name__ == "__main__":
                 best_path = os.path.join(MODELS_PATH, f"best_model_{opt.dataset}.pth")
                 torch.save(checkpoint, best_path)
                 print(f"Best model saved: {best_path}")
-        
+
         # 학습 완료 후 그래프 생성
         print("\nGenerating training history plots...")
-        
+
         # 디렉토리 생성
         plots_dir = os.path.join(MODELS_PATH, "plots")
         if not os.path.exists(plots_dir):
             os.makedirs(plots_dir)
-        
+
         epochs_range = range(starting_epoch, starting_epoch + len(history['train_loss']))
-        
+
         # Loss 그래프
         plt.figure(figsize=(12, 5))
         plt.subplot(1, 2, 1)
@@ -519,7 +519,7 @@ if __name__ == "__main__":
         plt.title('Training and Validation Loss')
         plt.legend()
         plt.grid(True)
-        
+
         # Accuracy 그래프
         plt.subplot(1, 2, 2)
         plt.plot(epochs_range, history['train_accuracy'], 'b-', label='Train Accuracy')
@@ -529,11 +529,11 @@ if __name__ == "__main__":
         plt.title('Training and Validation Accuracy')
         plt.legend()
         plt.grid(True)
-        
+
         plt.tight_layout()
         plt.savefig(os.path.join(plots_dir, f'training_history_{opt.dataset}.png'), dpi=300)
         print(f"Plot saved: {os.path.join(plots_dir, f'training_history_{opt.dataset}.png')}")
-        
+
         # Class distribution 그래프
         plt.figure(figsize=(12, 5))
         plt.subplot(1, 2, 1)
@@ -544,7 +544,7 @@ if __name__ == "__main__":
         plt.title('Training Class Distribution')
         plt.legend()
         plt.grid(True)
-        
+
         plt.subplot(1, 2, 2)
         plt.plot(epochs_range, history['val_positive'], 'g-', label='Val Positives')
         plt.plot(epochs_range, history['val_negative'], 'b-', label='Val Negatives')
@@ -553,17 +553,17 @@ if __name__ == "__main__":
         plt.title('Validation Class Distribution')
         plt.legend()
         plt.grid(True)
-        
+
         plt.tight_layout()
         plt.savefig(os.path.join(plots_dir, f'class_distribution_{opt.dataset}.png'), dpi=300)
         print(f"Plot saved: {os.path.join(plots_dir, f'class_distribution_{opt.dataset}.png')}")
-        
+
         # 히스토리를 JSON으로 저장
         history_path = os.path.join(MODELS_PATH, f'training_history_{opt.dataset}.json')
         with open(history_path, 'w') as f:
             json.dump(history, f, indent=4)
         print(f"History saved: {history_path}")
-        
+
         print("\nTraining completed!")
         print(f"Best validation loss: {min(history['val_loss']):.4f}")
         print(f"Best validation accuracy: {max(history['val_accuracy']):.4f}")

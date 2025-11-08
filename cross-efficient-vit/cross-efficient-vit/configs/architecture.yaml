@@ -7,29 +7,44 @@ training:
   step-size: 15
   rebalancing-fake: 0.3
   rebalancing-real: 1
-  frames-per-video: 30 # Equidistant frames
+  frames-per-video: 30
 
 model:
   image-size: 224
   num-classes: 1
-  depth: 4              # number of multi-scale encoding blocks
-  sm-dim: 192            # high res dimension
-  sm-patch-size: 7      # high res patch size (should be smaller than lg-patch-size)
-  sm-enc-depth: 2        # high res depth
-  sm-enc-dim-head: 64        
-  sm-enc-heads: 8        # high res heads
-  sm-enc-mlp-dim: 2048   # high res feedforward dimension
-  roi-dim: 384            # low res dimension
-  roi-patch-size: 7      # roi res patch size
-  roi-enc-depth: 3        # low res depth
-  roi-enc-dim-head: 64    
-  roi-enc-heads: 8        # low res heads
-  roi-enc-mlp-dim: 2048   # low res feedforward dimensions
-  cross-attn-depth: 2    # cross attention rounds
-  cross-attn-dim-head: 64    
-  cross-attn-heads: 8    # cross attention heads
-  roi-channels: 24
-  sm-channels: 1280
+  depth: 4
+  
+  # Small patches (고해상도, 후반 feature)
+  sm-dim: 192           # 증가 (고해상도니까 더 많은 차원)
+  sm-patch-size: 7      # 224/7 = 32 patches
+  sm-enc-depth: 2
+  sm-enc-dim-head: 64
+  sm-enc-heads: 8
+  sm-enc-mlp-dim: 2048
+  sm-channels: 1280     # EfficientNet block 16 출력
+  
+  # ROI patches (얼굴 랜드마크 기반)
+  roi-dim: 256
+  roi-patch-size: 7     # 수정: 7x7 ROI (표준)
+  roi-enc-depth: 3
+  roi-enc-dim-head: 64
+  roi-enc-heads: 8
+  roi-enc-mlp-dim: 2048
+  roi-channels: 24      # EfficientNet block 1 출력
+  
+  # Large patches (저해상도, 초반 feature)
+  lg-dim: 384           # 수정: 낮은 차원 (저해상도니까)
+  lg-patch-size: 56     # 224/56 = 4 patches
+  lg-enc-depth: 3
+  lg-enc-dim-head: 64
+  lg-enc-heads: 8
+  lg-enc-mlp-dim: 2048
+  lg-channels: 24       # EfficientNet block 1 출력
+  
+  # Cross attention
+  cross-attn-depth: 2
+  cross-attn-dim-head: 64
+  cross-attn-heads: 8
+  
   dropout: 0.15
   emb-dropout: 0.15
-  

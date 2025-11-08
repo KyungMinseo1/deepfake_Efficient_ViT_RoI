@@ -119,25 +119,54 @@ class ProjectInOut(nn.Module):
 # cross attention transformer
 
 class CrossTransformer(nn.Module):
-    def __init__(self, sm_dim, roi_dim, depth, heads, dim_head, dropout):
+    def __init__(self, sm_dim, roi_dim, lg_dim, depth, heads, dim_head, dropout):
         super().__init__()
         self.layers = nn.ModuleList([])
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
-                ProjectInOut(sm_dim, roi_dim, PreNorm(roi_dim, Attention(roi_dim, heads = heads, dim_head = dim_head, dropout = dropout))),
-                ProjectInOut(roi_dim, sm_dim, PreNorm(sm_dim, Attention(sm_dim, heads = heads, dim_head = dim_head, dropout = dropout)))
+                # sm ↔ roi
+                ProjectInOut(sm_dim, roi_dim, PreNorm(roi_dim, Attention(roi_dim, heads=heads, dim_head=dim_head, dropout=dropout))),
+                ProjectInOut(roi_dim, sm_dim, PreNorm(sm_dim, Attention(sm_dim, heads=heads, dim_head=dim_head, dropout=dropout))),
+                
+                # roi ↔ lg
+                ProjectInOut(roi_dim, lg_dim, PreNorm(lg_dim, Attention(lg_dim, heads=heads, dim_head=dim_head, dropout=dropout))),
+                ProjectInOut(lg_dim, roi_dim, PreNorm(roi_dim, Attention(roi_dim, heads=heads, dim_head=dim_head, dropout=dropout))),
+                
+                # sm ↔ lg
+                ProjectInOut(sm_dim, lg_dim, PreNorm(lg_dim, Attention(lg_dim, heads=heads, dim_head=dim_head, dropout=dropout))),
+                ProjectInOut(lg_dim, sm_dim, PreNorm(sm_dim, Attention(sm_dim, heads=heads, dim_head=dim_head, dropout=dropout))),
             ]))
 
-    def forward(self, sm_tokens, roi_tokens):
-        (sm_cls, sm_patch_tokens), (roi_cls, roi_patch_tokens) = map(lambda t: (t[:, :1], t[:, 1:]), (sm_tokens, roi_tokens))
+    def forward(self, sm_tokens, roi_tokens, lg_tokens):
+        # 각 토큰을 CLS와 patch로 분리
+        (sm_cls, sm_patch_tokens) = (sm_tokens[:, :1], sm_tokens[:, 1:])
+        (roi_cls, roi_patch_tokens) = (roi_tokens[:, :1], roi_tokens[:, 1:])
+        (lg_cls, lg_patch_tokens) = (lg_tokens[:, :1], lg_tokens[:, 1:])
 
-        for sm_attend_roi, roi_attend_sm in self.layers: # type: ignore
-            sm_cls = sm_attend_roi(sm_cls, context = roi_patch_tokens, kv_include_self = True) + sm_cls
-            roi_cls = roi_attend_sm(roi_cls, context = sm_patch_tokens, kv_include_self = True) + roi_cls
+        for sm_attend_roi, roi_attend_sm, roi_attend_lg, lg_attend_roi, sm_attend_lg, lg_attend_sm in self.layers: # type: ignore
+            # sm & roi
+            sm_cls_new = sm_attend_roi(sm_cls, context=roi_patch_tokens, kv_include_self=True)
+            roi_cls_new = roi_attend_sm(roi_cls, context=sm_patch_tokens, kv_include_self=True)
+            
+            # roi & lg
+            roi_cls_new = roi_cls_new + roi_attend_lg(roi_cls, context=lg_patch_tokens, kv_include_self=True)
+            lg_cls_new = lg_attend_roi(lg_cls, context=roi_patch_tokens, kv_include_self=True)
+            
+            # sm & lg
+            sm_cls_new = sm_cls_new + sm_attend_lg(sm_cls, context=lg_patch_tokens, kv_include_self=True)
+            lg_cls_new = lg_cls_new + lg_attend_sm(lg_cls, context=sm_patch_tokens, kv_include_self=True)
+            
+            # Residual connection
+            sm_cls = sm_cls + sm_cls_new
+            roi_cls = roi_cls + roi_cls_new
+            lg_cls = lg_cls + lg_cls_new
 
-        sm_tokens = torch.cat((sm_cls, sm_patch_tokens), dim = 1)
-        roi_tokens = torch.cat((roi_cls, roi_patch_tokens), dim = 1)
-        return sm_tokens, roi_tokens
+        # CLS와 patch 토큰 다시 합치기
+        sm_tokens = torch.cat((sm_cls, sm_patch_tokens), dim=1)
+        roi_tokens = torch.cat((roi_cls, roi_patch_tokens), dim=1)
+        lg_tokens = torch.cat((lg_cls, lg_patch_tokens), dim=1)
+        
+        return sm_tokens, roi_tokens, lg_tokens
 
 # multi-scale encoder
 
@@ -148,8 +177,10 @@ class MultiScaleEncoder(nn.Module):
         depth,
         sm_dim,
         roi_dim,
+        lg_dim,
         sm_enc_params,
         roi_enc_params,
+        lg_enc_params,
         cross_attn_heads,
         cross_attn_depth,
         cross_attn_dim_head = 64,
@@ -161,15 +192,16 @@ class MultiScaleEncoder(nn.Module):
             self.layers.append(nn.ModuleList([
                 Transformer(dim = sm_dim, dropout = dropout, **sm_enc_params), # type: ignore
                 Transformer(dim = roi_dim, dropout = dropout, **roi_enc_params), # type: ignore
-                CrossTransformer(sm_dim = sm_dim, roi_dim = roi_dim, depth = cross_attn_depth, heads = cross_attn_heads, dim_head = cross_attn_dim_head, dropout = dropout)
+                Transformer(dim = lg_dim, dropout = dropout, **lg_enc_params), # type: ignore
+                CrossTransformer(sm_dim = sm_dim, roi_dim = roi_dim, lg_dim=lg_dim, depth = cross_attn_depth, heads = cross_attn_heads, dim_head = cross_attn_dim_head, dropout = dropout)
             ]))
 
-    def forward(self, sm_tokens, roi_tokens):
-        for sm_enc, roi_enc, cross_attend in self.layers: # type: ignore
-            sm_tokens, roi_tokens = sm_enc(sm_tokens), roi_enc(roi_tokens)
-            sm_tokens, roi_tokens = cross_attend(sm_tokens, roi_tokens)
+    def forward(self, sm_tokens, roi_tokens, lg_tokens):
+        for sm_enc, roi_enc, lg_enc, cross_attend in self.layers: # type: ignore
+            sm_tokens, roi_tokens, lg_tokens = sm_enc(sm_tokens), roi_enc(roi_tokens), lg_enc(lg_tokens)
+            sm_tokens, roi_tokens, lg_tokens = cross_attend(sm_tokens, roi_tokens, lg_tokens)
 
-        return sm_tokens, roi_tokens
+        return sm_tokens, roi_tokens, lg_tokens
 
 # patch-based image to token embedder
 
@@ -339,6 +371,22 @@ class ImageEmbedder(nn.Module):
             x += self.pos_embedding[:, :x.size(1)]
 
         else:
+            if is_sample:
+                feat_map = x[0].detach().cpu() # [C', H', W']
+                num_show = min(feat_map.shape[0], 100)  # 너무 많으면 100개만
+                grid_size = int(num_show ** 0.5)
+                fig, axes = plt.subplots(grid_size, grid_size, figsize=(8,8))
+                for i, ax in enumerate(axes.flat):
+                    if i < num_show:
+                        ax.imshow(feat_map[i], cmap='viridis')
+                    else:
+                        ax.axis('off')  # 남는 칸은 비우기
+                    ax.axis('off')
+                plt.suptitle('Extracted Small patches')
+                plt.tight_layout()
+                plt.savefig("sample/sm_patches_grid.png", dpi=200)
+                plt.close()
+
             x = self.to_patch_embedding(x)
             b, n, _ = x.shape
             cls_tokens = repeat(self.cls_token, '() n d -> b n d', b = b)
@@ -363,6 +411,8 @@ class CrossEfficientViT(nn.Module):
         sm_channels = config['model']['sm-channels']
         roi_dim = config['model']['roi-dim']
         roi_channels = config['model']['roi-channels']         
+        lg_dim = config['model']['lg-dim']
+        lg_channels = config['model']['lg-channels']         
         sm_patch_size = config['model']['sm-patch-size']
         sm_enc_depth = config['model']['sm-enc-depth'] 
         sm_enc_heads = config['model']['sm-enc-heads']
@@ -373,6 +423,11 @@ class CrossEfficientViT(nn.Module):
         roi_enc_mlp_dim = config['model']['roi-enc-mlp-dim']
         roi_enc_heads = config['model']['roi-enc-heads']
         roi_enc_dim_head = config['model']['roi-enc-dim-head']
+        lg_patch_size = config['model']['lg-patch-size']
+        lg_enc_depth = config['model']['lg-enc-depth'] 
+        lg_enc_mlp_dim = config['model']['lg-enc-mlp-dim']
+        lg_enc_heads = config['model']['lg-enc-heads']
+        lg_enc_dim_head = config['model']['lg-enc-dim-head']
         cross_attn_depth = config['model']['cross-attn-depth']
         cross_attn_heads = config['model']['cross-attn-heads']
         cross_attn_dim_head = config['model']['cross-attn-dim-head']
@@ -384,11 +439,13 @@ class CrossEfficientViT(nn.Module):
 
         self.sm_image_embedder = ImageEmbedder(dim = sm_dim, image_size = image_size, patch_size = sm_patch_size, dropout = emb_dropout, efficient_block = 16, channels=sm_channels, is_roi=False)
         self.roi_image_embedder = ImageEmbedder(dim = roi_dim, image_size = image_size, patch_size = roi_patch_size, dropout = emb_dropout, efficient_block = 1, channels=roi_channels, is_roi=True)
+        self.lg_image_embedder = ImageEmbedder(dim = lg_dim, image_size = image_size, patch_size = lg_patch_size, dropout = emb_dropout, efficient_block = 1, channels=lg_channels, is_roi=False)
 
         self.multi_scale_encoder = MultiScaleEncoder(
             depth = depth,
             sm_dim = sm_dim,
             roi_dim = roi_dim,
+            lg_dim = lg_dim,
             cross_attn_heads = cross_attn_heads,
             cross_attn_dim_head = cross_attn_dim_head,
             cross_attn_depth = cross_attn_depth,
@@ -404,21 +461,30 @@ class CrossEfficientViT(nn.Module):
                 mlp_dim = roi_enc_mlp_dim,
                 dim_head = roi_enc_dim_head
             ),
+            lg_enc_params = dict(
+                depth = lg_enc_depth,
+                heads = lg_enc_heads,
+                mlp_dim = lg_enc_mlp_dim,
+                dim_head = lg_enc_dim_head
+            ),
             dropout = dropout
         )
 
         self.sm_mlp_head = nn.Sequential(nn.LayerNorm(sm_dim), nn.Linear(sm_dim, num_classes))
         self.roi_mlp_head = nn.Sequential(nn.LayerNorm(roi_dim), nn.Linear(roi_dim, num_classes))
+        self.lg_mlp_head = nn.Sequential(nn.LayerNorm(lg_dim), nn.Linear(lg_dim, num_classes))
 
     def forward(self, img, coordinates):
-        sm_tokens = self.sm_image_embedder(img, self.is_sample)
-        roi_tokens = self.roi_image_embedder(img, coordinates, self.is_sample)
+        sm_tokens = self.sm_image_embedder(img, is_sample = self.is_sample)
+        roi_tokens = self.roi_image_embedder(img, coordinates, is_sample = self.is_sample)
+        lg_tokens = self.lg_image_embedder(img, is_sample = self.is_sample)
 
-        sm_tokens, roi_tokens = self.multi_scale_encoder(sm_tokens, roi_tokens)
+        sm_tokens, roi_tokens, lg_tokens = self.multi_scale_encoder(sm_tokens, roi_tokens, lg_tokens)
 
-        sm_cls, roi_cls = map(lambda t: t[:, 0], (sm_tokens, roi_tokens))
+        sm_cls, roi_cls, lg_cls = map(lambda t: t[:, 0], (sm_tokens, roi_tokens, lg_tokens))
 
         sm_logits = self.sm_mlp_head(sm_cls)
         roi_logits = self.roi_mlp_head(roi_cls)
+        lg_logits = self.lg_mlp_head(lg_cls)
 
-        return sm_logits + roi_logits
+        return sm_logits + roi_logits + lg_logits
