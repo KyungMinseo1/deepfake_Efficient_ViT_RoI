@@ -8,6 +8,7 @@ from PIL import Image
 from utils2 import shuffle_dataset, get_n_params
 from tqdm import tqdm
 import numpy as np
+import random
 class SuppressOutput:
     def __enter__(self):
         self._original_stderr = sys.stderr
@@ -35,6 +36,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # (2->3으로 변경)
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DF40_DIR = os.path.join(DATA_DIR, "DF40")
+TEST_DF40_DIR = os.path.join(DATA_DIR, "DF40_test")
 MODELS_PATH = "models"
 METADATA_PATH = os.path.join(DATA_DIR, "dataset_json")
 SAMPLE_DATA_PATH = r'data\DF40\blendface\frames\001_870\000.png'
@@ -78,44 +80,57 @@ def extract_paths(folder_lst, train_paths, train_label, val_paths, val_label):
     """
     for f in tqdm(folder_lst):
         json_path = f + '_ff.json'
-        meta_keys = f + '_ff'
+        if f == "RDDM": # except for RDDM
+            meta_keys = "rddm_ff"
+        else:
+            meta_keys = f + '_ff'
         with open(os.path.join(METADATA_PATH, json_path), 'r') as ff:
             metadata = json.load(ff)
         exact_dir_path = {
-            ed.split('_')[0] : ed
+            (ed.split('_')[0] if '_' in ed else ed) : ed
             for ed in os.listdir(os.path.join(DF40_DIR, f, 'frames'))
         }
-        for r_f in tqdm(metadata[meta_keys].keys()):                          # ~~~_Real vs ~~~_Fake
-            for t_t in metadata[meta_keys][r_f].keys():                 # train vs test
-                for f_name in metadata[meta_keys][r_f][t_t].keys():     # each file number (953)
-                    subpath_lst = []
-                    no_files = False
-                    for path in metadata[meta_keys][r_f][t_t][f_name]['frames']:
-                        path = Path(path)
-                        parts = path.parts
-                        idx = parts.index('frames')
-                        file_id = os.path.join(*parts[idx+1:idx+2])
-                        if file_id in exact_dir_path.keys():
-                            exact_dir = exact_dir_path[file_id]
+        for r_f in tqdm(metadata[meta_keys].keys()):                # ~~~_Real vs ~~~_Fake
+            for t_t in metadata[meta_keys][r_f].keys():             # train vs test
+                for f_name in metadata[meta_keys][r_f][t_t].keys(): # each file number (953)
+                    try:
+                        subpath_lst = []
+                        no_files = False
+                        for path in metadata[meta_keys][r_f][t_t][f_name]['frames']:
+                            path = Path(path)
+                            parts = path.parts
+                            if 'frames' in parts:
+                                idx = parts.index('frames')
+                            elif 'ff' in parts:
+                                idx = parts.index('ff')
+                            file_id = os.path.join(*parts[idx+1:idx+2])
+                            if file_id in exact_dir_path.keys():
+                                exact_dir = exact_dir_path[file_id]
+                            else:
+                                no_files = True
+                                break
+                            frame_name = os.path.join(*parts[idx+2:idx+3])
+                            if t_t == "train":
+                                final_path = os.path.join(DF40_DIR, f, 'frames', exact_dir, frame_name) # data/DF40/blendface/frames/071/277.png
+                            else:
+                                final_path = os.path.join(TEST_DF40_DIR, f, 'ff', 'frames', exact_dir, frame_name)
+                            subpath_lst.append(final_path)
+                        if t_t == 'train' and not no_files:
+                            train_paths.append(subpath_lst)
+                            if 'Real' in r_f:
+                                train_label.append(0)
+                            else:
+                                train_label.append(1)
+                        elif t_t == 'test' and not no_files:
+                            val_paths.append(subpath_lst)
+                            if 'Real' in r_f:
+                                val_label.append(0)
+                            else:
+                                val_label.append(0)
                         else:
-                            no_files = True
-                            break
-                        frame_name = os.path.join(*parts[idx+2:idx+3])
-                        final_path = os.path.join(DF40_DIR, f, 'frames', exact_dir, frame_name) # data/DF40/blendface/frames/001/071/277.png # type: ignore
-                        subpath_lst.append(final_path)
-                    if t_t == 'train' and not no_files:
-                        train_paths.append(subpath_lst)
-                        if 'Real' in r_f:
-                            train_label.append(0)
-                        else:
-                            train_label.append(1)
-                    elif t_t == 'test' and not no_files:
-                        val_paths.append(subpath_lst)
-                        if 'Real' in r_f:
-                            val_label.append(0)
-                        else:
-                            val_label.append(0)
-                    else:
+                            continue
+                    except Exception as e:
+                        print(f"{f}-{r_f}-{t_t}-{f_name} 오류", e)
                         continue
 
 def read_frames(data, dataset, config, mode='train', is_sample=False):
@@ -130,9 +145,12 @@ def read_frames(data, dataset, config, mode='train', is_sample=False):
 
     crops_path, label = data
 
+    min_video_frames = max(int(config['training']['frames-per-video']),1)
+    crops_path = random.sample(crops_path, min_video_frames)
+
     if is_sample:
         print('crops_path: ', crops_path)
-        image = cv2.imread(os.path.join(crops_path))
+        image = cv2.imread(os.path.join(crops_path)) # type: ignore
         if image is None:
             print("⚠️ 이미지 파일을 찾을 수 없습니다. 경로를 다시 확인하세요.")
             return
@@ -233,8 +251,14 @@ def read_frames(data, dataset, config, mode='train', is_sample=False):
                     print("⚠️ 이미지 파일을 찾을 수 없습니다. 경로를 다시 확인하세요.")
         """
         for frame_image in crops_path:
-            print(frame_image)
-            pil_image = Image.open(frame_image)
+            if not os.path.exists(frame_image):
+                print(f"⚠️ 파일이 존재하지 않음: {frame_image}")
+                return
+            try:
+                pil_image = Image.open(frame_image)
+            except Exception as e:
+                print(f"🚨 이미지 열기 오류: {frame_image}, 오류: {e}")
+                return
             image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)  # type: ignore
             if image is None:
                 print(f"⚠️ {frame_image}의 이미지 파일을 읽을 수 없습니다.")
@@ -279,7 +303,7 @@ if __name__ == "__main__":
                         help='Path to latest checkpoint (default: none).')
     parser.add_argument('--dataset', type=str, default='All', 
                         help="""Which dataset to use (blendface|danet|ddim|DiT|e4s|facedancer|faceswa|facevid2vid|fomm|fsgan|hyperreenact|inswap
-                                |lia|mcnet}mobileswap|MRAA|one_shot_free|pirender|pixart|rddm|sadtalker|sd2.1|simswap|SiT|StyleGAN2|StyleGAN3
+                                |lia|mcnet|mobileswap|MRAA|one_shot_free|pirender|pixart|rddm|sadtalker|sd2.1|simswap|SiT|StyleGAN2|StyleGAN3
                                 |StyleGANXL|tpsm|uniface|VQGAN|wav2lip) or Sample (seperate each dataset with comma)""")
     parser.add_argument('--max_videos', type=int, default=-1, 
                         help="Maximum number of videos to use for training (default: all).")
@@ -334,7 +358,7 @@ if __name__ == "__main__":
     train_data = list(zip(train_paths, train_label))
     val_data = list(zip(val_paths, val_label))
         
-    with Pool(processes=2) as p:
+    with Pool(processes=10) as p:
         with tqdm(total=len(train_data)) as pbar:
             for v in p.imap_unordered(partial(read_frames, dataset=train_dataset, config=config, is_sample = is_sample),train_data):
                 pbar.update()

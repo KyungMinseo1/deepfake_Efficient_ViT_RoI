@@ -18,7 +18,9 @@ from deepfakes_dataset import DeepFakesDataset
 import math
 import yaml
 import argparse
-import pandas as pd
+import random
+from pathlib import Path
+from PIL import Image
 
 import os
 import sys
@@ -47,13 +49,12 @@ os.environ["GLOG_minloglevel"] = "3"   # 0=INFO, 1=WARNING, 2=ERROR, 3=FATAL (2-
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # (2->3으로 변경)
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-DATA_DIR = os.path.join(BASE_DIR, "data", "archive", "FaceForensics++_C23")
+DATA_DIR = os.path.join(BASE_DIR, "data")
+DF40_DIR = os.path.join(DATA_DIR, "DF40")
+TEST_DF40_DIR = os.path.join(DATA_DIR, "DF40_test")
 MODELS_PATH = "models"
-CSV_PATH = os.path.join(DATA_DIR, "csv") # Folder containing all training metadata for DFDC dataset
-TRAIN_META_PATH = os.path.join(CSV_PATH, 'TRAIN.csv')
-BALANCED_TRAIN_META_PATH = os.path.join(CSV_PATH, 'BALANCED_TRAIN.csv')
-VAL_META_PATH = os.path.join(CSV_PATH, 'TEST.csv')
-SAMPLE_DATA_PATH = r'data\archive\FaceForensics++_C23\crops\DeepFakeDetection\01_02__meeting_serious__YVGY8LOK\0_0.png'
+METADATA_PATH = os.path.join(DATA_DIR, "dataset_json")
+SAMPLE_DATA_PATH = r'data\DF40\blendface\frames\001_870\000.png'
 
 left_eye = [33, 133, 144, 153, 158, 160]
 right_eye = [263, 362, 373, 380, 385, 387]
@@ -85,9 +86,72 @@ def match_size(size):
         PadIfNeeded(min_height=size, min_width=size, border_mode=cv2.BORDER_CONSTANT)
         ], keypoint_params=keypoint_params)
 
+def extract_paths(folder_lst, train_paths, train_label, val_paths, val_label):
+    """
+    train_paths: list # [[path, path, ...], [path, path, ...], ]
+    train_label: list # [0, 1, 0, 1, ...]
+    test_paths: list
+    test_label: list
+    """
+    for f in tqdm(folder_lst):
+        json_path = f + '_ff.json'
+        if f == "RDDM": # except for RDDM
+            meta_keys = "rddm_ff"
+        else:
+            meta_keys = f + '_ff'
+        with open(os.path.join(METADATA_PATH, json_path), 'r') as ff:
+            metadata = json.load(ff)
+        exact_dir_path = {
+            (ed.split('_')[0] if '_' in ed else ed) : ed
+            for ed in os.listdir(os.path.join(DF40_DIR, f, 'frames'))
+        }
+        for r_f in tqdm(metadata[meta_keys].keys()):                # ~~~_Real vs ~~~_Fake
+            for t_t in metadata[meta_keys][r_f].keys():             # train vs test
+                for f_name in metadata[meta_keys][r_f][t_t].keys(): # each file number (953)
+                    try:
+                        subpath_lst = []
+                        no_files = False
+                        for path in metadata[meta_keys][r_f][t_t][f_name]['frames']:
+                            path = Path(path)
+                            parts = path.parts
+                            if 'frames' in parts:
+                                idx = parts.index('frames')
+                            elif 'ff' in parts:
+                                idx = parts.index('ff')
+                            file_id = os.path.join(*parts[idx+1:idx+2])
+                            if file_id in exact_dir_path.keys():
+                                exact_dir = exact_dir_path[file_id]
+                            else:
+                                no_files = True
+                                break
+                            frame_name = os.path.join(*parts[idx+2:idx+3])
+                            if t_t == "train":
+                                final_path = os.path.join(DF40_DIR, f, 'frames', exact_dir, frame_name) # data/DF40/blendface/frames/071/277.png
+                            else:
+                                final_path = os.path.join(TEST_DF40_DIR, f, 'ff', 'frames', exact_dir, frame_name)
+                            subpath_lst.append(final_path)
+                        if t_t == 'train' and not no_files:
+                            train_paths.append(subpath_lst)
+                            if 'Real' in r_f:
+                                train_label.append(0)
+                            else:
+                                train_label.append(1)
+                        elif t_t == 'test' and not no_files:
+                            val_paths.append(subpath_lst)
+                            if 'Real' in r_f:
+                                val_label.append(0)
+                            else:
+                                val_label.append(0)
+                        else:
+                            continue
+                    except Exception as e:
+                        print(f"{f}-{r_f}-{t_t}-{f_name} 오류", e)
+                        continue
+
 def read_frames(data, dataset, config, mode='train', is_sample=False):
     '''
-    data -> (path, label)
+    data -> (crops_path, label)
+    crops_path -> [exact_path, exact_path, ...]
     label -> 0 or 1
     train_dataset -> list()
     validation_dataset -> list()
@@ -96,9 +160,13 @@ def read_frames(data, dataset, config, mode='train', is_sample=False):
 
     crops_path, label = data
 
+    if not is_sample:
+        min_video_frames = max(int(config['training']['frames-per-video']),1)
+        crops_path = random.sample(crops_path, min_video_frames)
+
     if is_sample:
         print('crops_path: ', crops_path)
-        image = cv2.imread(os.path.join(crops_path))
+        image = cv2.imread(os.path.join(crops_path)) # type: ignore
         if image is None:
             print("⚠️ 이미지 파일을 찾을 수 없습니다. 경로를 다시 확인하세요.")
             return
@@ -131,6 +199,7 @@ def read_frames(data, dataset, config, mode='train', is_sample=False):
         else:
             print("⚠️ 이미지 파일을 찾을 수 없습니다. 경로를 다시 확인하세요.")
     else:
+        """
         # Calculate the interval to extract the frames
         frames_number = len(os.listdir(crops_path))
         if label == 0:
@@ -162,6 +231,7 @@ def read_frames(data, dataset, config, mode='train', is_sample=False):
                     frames_paths_dict[key] = frames_paths_dict[key][::frames_interval]
                 
                 frames_paths_dict[key] = frames_paths_dict[key][:min_video_frames]
+
         # Select N frames from the collected ones
         for key in frames_paths_dict.keys():
             for frame_image in frames_paths_dict[key]:
@@ -195,8 +265,50 @@ def read_frames(data, dataset, config, mode='train', is_sample=False):
                     dataset.append((image, label, coordinates))
                 else:
                     print("⚠️ 이미지 파일을 찾을 수 없습니다. 경로를 다시 확인하세요.")
+        """
+        for frame_image in crops_path:
+            if not os.path.exists(frame_image):
+                print(f"⚠️ 파일이 존재하지 않음: {frame_image}")
+                return
+            try:
+                pil_image = Image.open(frame_image)
+            except Exception as e:
+                print(f"🚨 이미지 열기 오류: {frame_image}, 오류: {e}")
+                return
+            image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)  # type: ignore
+            if image is None:
+                print(f"⚠️ {frame_image}의 이미지 파일을 읽을 수 없습니다.")
+                return
+            
+            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) 
+            coordinates = []
+            with SuppressOutput():
+                mesh = face_mesh.FaceMesh(
+                    static_image_mode=True,
+                    max_num_faces=1,
+                    refine_landmarks=True,
+                    min_detection_confidence=0.5)
+                
+            with mesh:
+                results = mesh.process(rgb_image)
 
-# Main body
+                if results.multi_face_landmarks: # type: ignore
+                    for face_landmarks in results.multi_face_landmarks: # type: ignore
+                        for lm in np.array(face_landmarks.landmark[:])[index]:
+                            x = int(lm.x * image.shape[1])
+                            y = int(lm.y * image.shape[0])
+                            coordinates.append([x, y])
+            if not len(coordinates) == 97:
+                return
+            transform = match_size(config['model']['image-size'])
+            augmented = transform(image=image, keypoints=coordinates)
+            image = augmented['image']
+            coordinates = augmented['keypoints']
+            if image is not None:
+                dataset.append((image, label, coordinates))
+            else:
+                print(f"⚠️ {frame_image}의 이미지 파일을 찾을 수 없습니다. 경로를 다시 확인하세요.")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--num_epochs', default=100, type=int,
@@ -206,7 +318,9 @@ if __name__ == "__main__":
     parser.add_argument('--resume', default='', type=str, metavar='PATH',
                         help='Path to latest checkpoint (default: none).')
     parser.add_argument('--dataset', type=str, default='All', 
-                        help="Which dataset to use (Deepfakes|Face2Face|FaceShifter|FaceSwap|NeuralTextures|All) or Sample")
+                        help="""Which dataset to use (blendface|danet|ddim|DiT|e4s|facedancer|faceswa|facevid2vid|fomm|fsgan|hyperreenact|inswap
+                                |lia|mcnet|mobileswap|MRAA|one_shot_free|pirender|pixart|rddm|sadtalker|sd2.1|simswap|SiT|StyleGAN2|StyleGAN3
+                                |StyleGANXL|tpsm|uniface|VQGAN|wav2lip) or Sample (seperate each dataset with comma)""")
     parser.add_argument('--max_videos', type=int, default=-1, 
                         help="Maximum number of videos to use for training (default: all).")
     parser.add_argument('--config', type=str, default='cross-efficient-vit/cross-efficient-vit/configs/architecture.yaml',
@@ -219,20 +333,25 @@ if __name__ == "__main__":
     opt = parser.parse_args()
     print(opt)
 
+    mgr = Manager()
+    train_dataset = mgr.list()
+    validation_dataset = mgr.list()
+    train_paths, train_label, val_paths, val_label = [], [], [], []
+
     with open(opt.config, 'r', encoding="utf-8") as ymlfile:
         config = yaml.safe_load(ymlfile)
  
     if opt.dataset != "Sample":
-        model = CrossEfficientViT(config=config)
+        model = CrossEfficientViT(config=config, efficient_net=opt.efficient_net)
         model.train()
         is_sample = False
         print("MODEL ON")
     else:
         is_sample = True
-        model = CrossEfficientViT(config=config, is_sample=is_sample)
+        model = CrossEfficientViT(config=config, is_sample=is_sample, efficient_net=opt.efficient_net)
         model.eval()
         print("SAMPLE MODEL ON")
-    
+
     optimizer = torch.optim.SGD(model.parameters(), lr=config['training']['lr'], weight_decay=config['training']['weight-decay'])
     scheduler = lr_scheduler.StepLR(optimizer, step_size=config['training']['step-size'], gamma=config['training']['gamma'])
 
@@ -266,8 +385,6 @@ if __name__ == "__main__":
         print("No checkpoint loaded. Starting from scratch.")
 
     print("Model Parameters:", get_n_params(model))
-    train_df = pd.read_csv(BALANCED_TRAIN_META_PATH)
-    val_df = pd.read_csv(VAL_META_PATH)
 
     #READ DATASET
     if opt.dataset == "Sample":
@@ -275,28 +392,19 @@ if __name__ == "__main__":
         val_data = None
         print("You are currently looking at Sample DATA")
     elif opt.dataset != "All":
-        folders = [opt.dataset, "original"]
-        s_train_df = train_df.loc[train_df.data.isin(folders)]
-        s_val_df = val_df.loc[val_df.data.isin(folders)]
-        s_train_paths = list(s_train_df.crops_path)
-        s_train_label = list(s_train_df.Label_int)
-        train_data = list(zip(s_train_paths, s_train_label))
-        s_val_paths = list(s_val_df.crops_path)
-        s_val_label = list(s_val_df.Label_int)
-        val_data = list(zip(s_val_paths, s_val_label))
-    else:
-        folders = ["DeepFakeDetection", "Deepfakes", "Face2Face", "FaceShifter", "FaceSwap", "NeuralTextures", "original"]
-        train_paths = list(train_df.crops_path)
-        train_label = list(train_df.Label_int)
-        val_paths = list(val_df.crops_path)
-        val_label = list(val_df.Label_int)
+        folders = opt.dataset.split(',')
+        print('Target Folders: ', folders)
+        extract_paths(folders, train_paths=train_paths, train_label=train_label, val_paths=val_paths, val_label=val_label)
         train_data = list(zip(train_paths, train_label))
         val_data = list(zip(val_paths, val_label))
 
-    mgr = Manager()
-    train_dataset = mgr.list()
-    validation_dataset = mgr.list()
-
+    else:
+        folders = os.listdir(DF40_DIR)
+        print('Target Folders: ', folders)
+        extract_paths(folders, train_paths=train_paths, train_label=train_label, val_paths=val_paths, val_label=val_label)
+        train_data = list(zip(train_paths, train_label))
+        val_data = list(zip(val_paths, val_label))
+        
     with Pool(processes=10) as p:
         with tqdm(total=len(train_data)) as pbar:
             for v in p.imap_unordered(partial(read_frames, dataset=train_dataset, config=config, is_sample = is_sample),train_data):
@@ -569,6 +677,6 @@ if __name__ == "__main__":
         print(f"Best validation accuracy: {max(history['val_accuracy']):.4f}")
 
 
-# 처음: python cross-efficient-vit/cross-efficient-vit/train_show.py --dataset All
-# 샘플: python cross-efficient-vit/cross-efficient-vit/train_show.py --dataset Sample
-# 재개: python cross-efficient-vit/cross-efficient-vit/train_show.py --dataset All --resume models/efficientnet_checkpoint10_All.pth
+# 처음: python cross-efficient-vit/cross-efficient-vit/train_show_DF40.py --dataset All --efficient_net 7 --config cross-efficient-vit/cross-efficient-vit/configs/architecture_for_b7.yaml
+# 샘플: python cross-efficient-vit/cross-efficient-vit/train_show_DF40.py --dataset Sample --efficient_net 7 --config cross-efficient-vit/cross-efficient-vit/configs/architecture_for_b7.yaml
+# 재개: python cross-efficient-vit/cross-efficient-vit/train_show_DF40.py --dataset All --resume models/efficientnet_checkpoint10_All.pth --efficient_net 7 --config cross-efficient-vit/cross-efficient-vit/configs/architecture_for_b7.yaml

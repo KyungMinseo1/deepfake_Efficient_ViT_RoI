@@ -9,7 +9,7 @@ from einops.layers.torch import Rearrange
 from efficient_net.efficientnet_pytorch import EfficientNet
 from torchvision.ops import roi_align
 import matplotlib.pyplot as plt
-import os
+import os, re
 
 # helpers
 
@@ -215,11 +215,20 @@ class ImageEmbedder(nn.Module):
         dropout = 0.,
         efficient_block = 8,
         channels,
-        is_roi = False
+        is_roi = False,
+        efficient_net = 0
     ):
         super().__init__()
-        assert image_size % patch_size == 0, 'Image dimensions must be divisible by the patch size.'
-        self.efficient_net = EfficientNet.from_pretrained('efficientnet-b0')
+        # assert image_size % patch_size == 0, 'Image dimensions must be divisible by the patch size.'
+
+        if efficient_net == 0:
+            self.efficient_net = EfficientNet.from_pretrained('efficientnet-b0')
+        else:
+            self.efficient_net = EfficientNet.from_pretrained('efficientnet-b7')
+            checkpoint = torch.load("pretrained_model/efficientnet-b7.pth", map_location="cpu")
+            state_dict = checkpoint.get("state_dict", checkpoint)
+            self.efficient_net.load_state_dict({re.sub("^module.", "", k): v for k, v in state_dict.items()}, strict=False)
+
         self.efficient_net.delete_blocks(efficient_block)
         self.efficient_block = efficient_block
         
@@ -291,6 +300,7 @@ class ImageEmbedder(nn.Module):
         # CNN feature extraction
         x = self.efficient_net.extract_features_at_block(img, self.efficient_block)  
         # 여기서 x: [B, C', H', W']
+        print(x.shape)
 
         if self.is_roi and landmarks is not None:
             # landmarks는 [B, N_coords, 2] 형태의 Tensor라고 가정
@@ -402,7 +412,8 @@ class CrossEfficientViT(nn.Module):
         self,
         *,
         config,
-        is_sample = False
+        is_sample = False,
+        efficient_net = 0
     ):
         super().__init__()
         image_size = config['model']['image-size']
@@ -436,10 +447,11 @@ class CrossEfficientViT(nn.Module):
         emb_dropout = config['model']['emb-dropout']
 
         self.is_sample = is_sample
+        self.e_net = efficient_net
 
-        self.sm_image_embedder = ImageEmbedder(dim = sm_dim, image_size = image_size, patch_size = sm_patch_size, dropout = emb_dropout, efficient_block = 16, channels=sm_channels, is_roi=False)
-        self.roi_image_embedder = ImageEmbedder(dim = roi_dim, image_size = image_size, patch_size = roi_patch_size, dropout = emb_dropout, efficient_block = 1, channels=roi_channels, is_roi=True)
-        self.lg_image_embedder = ImageEmbedder(dim = lg_dim, image_size = image_size, patch_size = lg_patch_size, dropout = emb_dropout, efficient_block = 1, channels=lg_channels, is_roi=False)
+        self.sm_image_embedder = ImageEmbedder(dim = sm_dim, image_size = image_size, patch_size = sm_patch_size, dropout = emb_dropout, efficient_block = 72, channels=sm_channels, is_roi=False, efficient_net=self.e_net)
+        self.roi_image_embedder = ImageEmbedder(dim = roi_dim, image_size = image_size, patch_size = roi_patch_size, dropout = emb_dropout, efficient_block = 1, channels=roi_channels, is_roi=True, efficient_net=self.e_net)
+        self.lg_image_embedder = ImageEmbedder(dim = lg_dim, image_size = image_size, patch_size = lg_patch_size, dropout = emb_dropout, efficient_block = 1, channels=lg_channels, is_roi=False, efficient_net=self.e_net)
 
         self.multi_scale_encoder = MultiScaleEncoder(
             depth = depth,
