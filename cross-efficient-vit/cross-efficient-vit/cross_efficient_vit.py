@@ -300,7 +300,6 @@ class ImageEmbedder(nn.Module):
         # CNN feature extraction
         x = self.efficient_net.extract_features_at_block(img, self.efficient_block)  
         # 여기서 x: [B, C', H', W']
-        print(x.shape)
 
         if self.is_roi and landmarks is not None:
             # landmarks는 [B, N_coords, 2] 형태의 Tensor라고 가정

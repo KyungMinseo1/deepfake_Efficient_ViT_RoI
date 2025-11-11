@@ -141,7 +141,7 @@ def extract_paths(folder_lst, train_paths, train_label, val_paths, val_label):
                             if 'Real' in r_f:
                                 val_label.append(0)
                             else:
-                                val_label.append(0)
+                                val_label.append(1)
                         else:
                             continue
                     except Exception as e:
@@ -159,9 +159,12 @@ def read_frames(data, dataset, config, mode='train', is_sample=False):
     '''
 
     crops_path, label = data
+    if crops_path == []:
+        print(f"⚠️ 이미지가 없습니다. 경로를 다시 확인하세요.")
+        return
 
     if not is_sample:
-        min_video_frames = max(int(config['training']['frames-per-video']),1)
+        min_video_frames = min(int(config['training']['frames-per-video']),len(crops_path))
         crops_path = random.sample(crops_path, min_video_frames)
 
     if is_sample:
@@ -329,9 +332,16 @@ if __name__ == "__main__":
                         help="Which EfficientNet version to use (0 or 7, default: 0)")
     parser.add_argument('--patience', type=int, default=5, 
                         help="How many epochs wait before stopping for validation loss not improving.")
+    parser.add_argument('--save_dir', type=str, default='checkpoints', metavar='PATH',
+                        help="Directory path to save model")
+    parser.add_argument('--save_dir_', type=str, default='checkpoints1', metavar='PATH',
+                        help="Exact directory path to save model")
     
     opt = parser.parse_args()
     print(opt)
+    os.makedirs(opt.save_dir, exist_ok=True)
+    CHECKPOINTS_DIR = os.path.join(opt.save_dir, opt.save_dir_)
+    os.makedirs(CHECKPOINTS_DIR, exist_ok=True)
 
     mgr = Manager()
     train_dataset = mgr.list()
@@ -404,7 +414,7 @@ if __name__ == "__main__":
         extract_paths(folders, train_paths=train_paths, train_label=train_label, val_paths=val_paths, val_label=val_label)
         train_data = list(zip(train_paths, train_label))
         val_data = list(zip(val_paths, val_label))
-        
+
     with Pool(processes=10) as p:
         with tqdm(total=len(train_data)) as pbar:
             for v in p.imap_unordered(partial(read_frames, dataset=train_dataset, config=config, is_sample = is_sample),train_data):
@@ -583,8 +593,8 @@ if __name__ == "__main__":
                 str(total_loss) + " accuracy:" + str(train_correct) +" val_loss:" + str(total_val_loss) + " val_accuracy:" + str(val_correct) + " val_0s:" + str(val_negative) + "/" + str(np.count_nonzero(validation_labels == 0)) + " val_1s:" + str(val_positive) + "/" + str(np.count_nonzero(validation_labels == 1)))
 
             
-            if not os.path.exists(MODELS_PATH):
-                os.makedirs(MODELS_PATH)
+            if not os.path.exists(CHECKPOINTS_DIR):
+                os.makedirs(CHECKPOINTS_DIR)
             
             # 완전한 체크포인트 저장
             checkpoint = {
@@ -597,13 +607,13 @@ if __name__ == "__main__":
                 'dataset': opt.dataset
             }
             
-            checkpoint_path = os.path.join(MODELS_PATH, f"checkpoint_epoch{t}_{opt.dataset}.pth")
+            checkpoint_path = os.path.join(CHECKPOINTS_DIR, f"checkpoint_epoch{t}_{opt.dataset}.pth")
             torch.save(checkpoint, checkpoint_path)
             print(f"Checkpoint saved: {checkpoint_path}")
             
             # 최고 성능 모델 별도 저장
             if len(history['val_loss']) > 0 and total_val_loss == min(history['val_loss']):
-                best_path = os.path.join(MODELS_PATH, f"best_model_{opt.dataset}.pth")
+                best_path = os.path.join(CHECKPOINTS_DIR, f"best_model_{opt.dataset}.pth")
                 torch.save(checkpoint, best_path)
                 print(f"Best model saved: {best_path}")
 
@@ -611,7 +621,7 @@ if __name__ == "__main__":
         print("\nGenerating training history plots...")
 
         # 디렉토리 생성
-        plots_dir = os.path.join(MODELS_PATH, "plots")
+        plots_dir = os.path.join(CHECKPOINTS_DIR, "plots")
         if not os.path.exists(plots_dir):
             os.makedirs(plots_dir)
 
@@ -667,7 +677,7 @@ if __name__ == "__main__":
         print(f"Plot saved: {os.path.join(plots_dir, f'class_distribution_{opt.dataset}.png')}")
 
         # 히스토리를 JSON으로 저장
-        history_path = os.path.join(MODELS_PATH, f'training_history_{opt.dataset}.json')
+        history_path = os.path.join(CHECKPOINTS_DIR, f'training_history_{opt.dataset}.json')
         with open(history_path, 'w') as f:
             json.dump(history, f, indent=4)
         print(f"History saved: {history_path}")
@@ -678,5 +688,6 @@ if __name__ == "__main__":
 
 
 # 처음: python cross-efficient-vit/cross-efficient-vit/train_show_DF40.py --dataset All --efficient_net 7 --config cross-efficient-vit/cross-efficient-vit/configs/architecture_for_b7.yaml
+# 처음(b0): python cross-efficient-vit/cross-efficient-vit/train_show_DF40.py --dataset All --efficient_net 0 --config cross-efficient-vit/cross-efficient-vit/configs/architecture.yaml
 # 샘플: python cross-efficient-vit/cross-efficient-vit/train_show_DF40.py --dataset Sample --efficient_net 7 --config cross-efficient-vit/cross-efficient-vit/configs/architecture_for_b7.yaml
 # 재개: python cross-efficient-vit/cross-efficient-vit/train_show_DF40.py --dataset All --resume models/efficientnet_checkpoint10_All.pth --efficient_net 7 --config cross-efficient-vit/cross-efficient-vit/configs/architecture_for_b7.yaml
