@@ -1,5 +1,5 @@
 training:
-  lr: 0.005
+  lr: 0.001
   weight-decay: 0.0000001
   bs: 8
   scheduler: 'steplr'
@@ -7,7 +7,7 @@ training:
   step-size: 15
   rebalancing-fake: 0.3
   rebalancing-real: 1
-  frames-per-video: 5
+  frames-per-video: 1
 
 model:
   image-size: 600
@@ -15,6 +15,7 @@ model:
   depth: 4
   
   # Small patches (고해상도, 후반 feature)
+  sm-enet: 72
   sm-dim: 192           # 증가 (고해상도니까 더 많은 차원)
   sm-patch-size: 19      # 224/7 = 32 patches
   sm-enc-depth: 2
@@ -24,8 +25,9 @@ model:
   sm-channels: 2560     # EfficientNet block 16 출력
   
   # ROI patches (얼굴 랜드마크 기반)
+  roi-enet: 1
   roi-dim: 256
-  roi-patch-size: 10     # 수정: 10x10 ROI (표준)
+  roi-patch-size: 19     # 수정: 19x19 ROI (표준)
   roi-enc-depth: 3
   roi-enc-dim-head: 64
   roi-enc-heads: 8
@@ -33,6 +35,7 @@ model:
   roi-channels: 32      # EfficientNet block 1 출력
   
   # Large patches (저해상도, 초반 feature)
+  lg-enet: 1
   lg-dim: 384           # 수정: 낮은 차원 (저해상도니까)
   lg-patch-size: 150     # 224/56 = 4 patches
   lg-enc-depth: 3

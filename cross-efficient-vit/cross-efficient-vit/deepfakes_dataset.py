@@ -23,13 +23,9 @@ class DeepFakesDataset(Dataset):
         return Compose([
             ImageCompression(quality_lower=60, quality_upper=100, p=0.2), # type: ignore
             GaussNoise(p=0.3),
-            #GaussianBlur(blur_limit=3, p=0.05),
+            # GaussianBlur(blur_limit=3, p=0.05),
             HorizontalFlip(),
-            OneOf([
-                LongestMaxSize(max_size=size, interpolation=cv2.INTER_AREA),
-                LongestMaxSize(max_size=size, interpolation=cv2.INTER_LINEAR),
-                LongestMaxSize(max_size=size, interpolation=cv2.INTER_CUBIC),
-            ], p=1),
+            LongestMaxSize(max_size=size, interpolation=cv2.INTER_CUBIC),
             PadIfNeeded(min_height=size, min_width=size, border_mode=cv2.BORDER_CONSTANT),
             OneOf([RandomBrightnessContrast(), FancyPCA(), HueSaturationValue()], p=0.4),
             ToGray(p=0.2),

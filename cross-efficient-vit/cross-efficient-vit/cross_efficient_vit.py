@@ -422,17 +422,20 @@ class CrossEfficientViT(nn.Module):
         roi_dim = config['model']['roi-dim']
         roi_channels = config['model']['roi-channels']         
         lg_dim = config['model']['lg-dim']
-        lg_channels = config['model']['lg-channels']         
+        lg_channels = config['model']['lg-channels']
+        sm_enet = config['model']['sm-enet']         
         sm_patch_size = config['model']['sm-patch-size']
         sm_enc_depth = config['model']['sm-enc-depth'] 
         sm_enc_heads = config['model']['sm-enc-heads']
         sm_enc_mlp_dim = config['model']['sm-enc-mlp-dim']
         sm_enc_dim_head = config['model']['sm-enc-dim-head']
+        roi_enet = config['model']['roi-enet']
         roi_patch_size = config['model']['roi-patch-size']
         roi_enc_depth = config['model']['roi-enc-depth'] 
         roi_enc_mlp_dim = config['model']['roi-enc-mlp-dim']
         roi_enc_heads = config['model']['roi-enc-heads']
         roi_enc_dim_head = config['model']['roi-enc-dim-head']
+        lg_enet = config['model']['lg-enet']
         lg_patch_size = config['model']['lg-patch-size']
         lg_enc_depth = config['model']['lg-enc-depth'] 
         lg_enc_mlp_dim = config['model']['lg-enc-mlp-dim']
@@ -448,9 +451,9 @@ class CrossEfficientViT(nn.Module):
         self.is_sample = is_sample
         self.e_net = efficient_net
 
-        self.sm_image_embedder = ImageEmbedder(dim = sm_dim, image_size = image_size, patch_size = sm_patch_size, dropout = emb_dropout, efficient_block = 72, channels=sm_channels, is_roi=False, efficient_net=self.e_net)
-        self.roi_image_embedder = ImageEmbedder(dim = roi_dim, image_size = image_size, patch_size = roi_patch_size, dropout = emb_dropout, efficient_block = 1, channels=roi_channels, is_roi=True, efficient_net=self.e_net)
-        self.lg_image_embedder = ImageEmbedder(dim = lg_dim, image_size = image_size, patch_size = lg_patch_size, dropout = emb_dropout, efficient_block = 1, channels=lg_channels, is_roi=False, efficient_net=self.e_net)
+        self.sm_image_embedder = ImageEmbedder(dim = sm_dim, image_size = image_size, patch_size = sm_patch_size, dropout = emb_dropout, efficient_block = sm_enet, channels=sm_channels, is_roi=False, efficient_net=self.e_net)
+        self.roi_image_embedder = ImageEmbedder(dim = roi_dim, image_size = image_size, patch_size = roi_patch_size, dropout = emb_dropout, efficient_block = roi_enet, channels=roi_channels, is_roi=True, efficient_net=self.e_net)
+        self.lg_image_embedder = ImageEmbedder(dim = lg_dim, image_size = image_size, patch_size = lg_patch_size, dropout = emb_dropout, efficient_block = lg_enet, channels=lg_channels, is_roi=False, efficient_net=self.e_net)
 
         self.multi_scale_encoder = MultiScaleEncoder(
             depth = depth,
